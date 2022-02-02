@@ -1,4 +1,4 @@
-from .base_options import BaseOptions
+from src.pix2pixHD.options.base_options import BaseOptions
 
 class TrainOptions(BaseOptions):
     def initialize(self):
@@ -31,4 +31,7 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--no_lsgan', action='store_true', help='do *not* use least square GAN, if false, use vanilla GAN')
         self.parser.add_argument('--pool_size', type=int, default=0, help='the size of image buffer that stores previously generated images')
 
+        # Clouds
+        self.parser.add_argument('--train_clouds', action="store_true", default=False, help='train on cloud dataset')
+        
         self.isTrain = True

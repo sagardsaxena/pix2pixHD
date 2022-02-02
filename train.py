@@ -1,18 +1,31 @@
 import time
 import os
+import sys
 import numpy as np
 import torch
 from torch.autograd import Variable
 from collections import OrderedDict
 from subprocess import call
 import fractions
-def lcm(a,b): return abs(a * b)/fractions.gcd(a,b) if a and b else 0
+import math
+def lcm(a,b): return abs(a * b)/math.gcd(a,b) if a and b else 0
 
-from options.train_options import TrainOptions
-from data.data_loader import CreateDataLoader
-from models.models import create_model
-import util.util as util
-from util.visualizer import Visualizer
+import sys
+sys.path.append('../..')
+
+from src.pix2pixHD.options.train_options import TrainOptions
+from src.pix2pixHD.data.data_loader import CreateDataLoader
+from src.pix2pixHD.models.models import create_model
+import src.pix2pixHD.util.util as util
+from src.pix2pixHD.util.visualizer import Visualizer
+
+from src.baseline.cloud_dataset import CloudDataset
+from src.train import add_paths, split_features_labels
+from pathlib import Path
+import pandas as pd
+import pickle
+from tqdm import tqdm
+
 
 opt = TrainOptions().parse()
 iter_path = os.path.join(opt.checkpoints_dir, opt.name, 'iter.txt')
@@ -33,11 +46,47 @@ if opt.debug:
     opt.niter_decay = 0
     opt.max_dataset_size = 10
 
-data_loader = CreateDataLoader(opt)
-dataset = data_loader.load_data()
+if not opt.train_clouds:
+   data_loader = CreateDataLoader(opt)
+   dataset = data_loader.load_data()
+else:
+    train_meta = pd.read_csv("../../data/train_metadata.csv")
+    train_meta = add_paths(train_meta, 
+                           Path("../../data/train_features"), 
+                           Path("../../data/train_labels"),
+                           ["B02", "B03", "B04", "B08"])
+    
+    # Band Normalization and Means
+    with open("../../assets/data_norm.pkl", "rb") as f:
+        norm = pickle.load(f)
+
+    # Split features and labels
+    train_x, train_y = split_features_labels(train_meta)
+
+    # Create cloud dataset with simple augmentation and basic bands
+    cloud_dataset = CloudDataset(
+        x_paths=train_x,
+        bands=["B02", "B03", "B04", "B08"],
+        y_paths=train_y,
+        transforms="simple",
+        norm=norm,
+        pull_bands=False,
+        pix2pix=True
+    )
+
+    # Create data loader with cloud dataset
+    data_loader = torch.utils.data.DataLoader(
+        cloud_dataset,
+        batch_size=opt.batchSize,
+        num_workers=int(opt.nThreads),
+        shuffle=True,
+        pin_memory=True,
+        persistent_workers=True)
+    dataset = data_loader
+
 dataset_size = len(data_loader)
 print('#training images = %d' % dataset_size)
-
+ 
 model = create_model(opt)
 visualizer = Visualizer(opt)
 if opt.fp16:    
@@ -67,6 +116,7 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
         save_fake = total_steps % opt.display_freq == display_delta
 
         ############## Forward Pass ######################
+        # print(data['label'].shape, data['image'].shape, opt.input_nc, opt.output_nc)
         losses, generated = model(Variable(data['label']), Variable(data['inst']), 
             Variable(data['image']), Variable(data['feat']), infer=save_fake)
 
@@ -106,8 +156,11 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
 
         ### display output images
         if save_fake:
+            generated_image = generated.data[0]
+            if opt.train_clouds:
+                generated_image = (generated.data[0] > 0) * 2 - 1       
             visuals = OrderedDict([('input_label', util.tensor2label(data['label'][0], opt.label_nc)),
-                                   ('synthesized_image', util.tensor2im(generated.data[0])),
+                                   ('synthesized_image', util.tensor2im(generated_image)),
                                    ('real_image', util.tensor2im(data['image'][0]))])
             visualizer.display_current_results(visuals, epoch, total_steps)
 
